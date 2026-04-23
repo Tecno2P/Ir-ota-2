@@ -411,7 +411,7 @@ void WebUI::setupOtaRoutes() {
             // ESPAsyncWebServer upload callback: index, data, len, final
             // total is carried via Content-Length header when available
             size_t total = 0;
-            AsyncWebHeader* clHdr = req->getHeader("Content-Length");
+            const AsyncWebHeader* clHdr = req->getHeader("Content-Length");
             if (clHdr) {
                 long clVal = clHdr->value().toInt();
                 if (clVal > 0) total = (size_t)clVal;
@@ -779,9 +779,12 @@ void WebUI::handleGetStatus(AsyncWebServerRequest* req) {
     doc["macroName"]     = macroMgr.runningName();
     doc["macroCount"]    = (int)macroMgr.list().size();
     // OTA flash space (real partition data)
-    doc["otaFreeKB"]     = (uint32_t)(otaMgr.freeOtaBytes() / 1024);
+    doc["otaPartKB"]     = (uint32_t)(otaMgr.otaPartitionSize() / 1024);  // real IDF partition size
+    doc["otaFreeKB"]     = (uint32_t)(otaMgr.freeOtaBytes() / 1024);       // 0 = no valid OTA partition
+    doc["otaPartOk"]     = (otaMgr.freeOtaBytes() > 0);                     // false = OTA impossible
     doc["sketchSizeKB"]  = (uint32_t)(ESP.getSketchSize() / 1024);
     doc["otaMaxKB"]      = (uint32_t)(OTA_MAX_FIRMWARE_BYTES / 1024);
+    doc["fsFreeKB"]      = (uint32_t)(otaMgr.fsFreeBytes() / 1024);
     // Watchdog / system health (real sensor readings)
     doc["cpuTempC"]      = (float)((int)(wdtMgr.cpuTemperature() * 10)) / 10.0f;
     doc["heapMin"]       = wdtMgr.minHeapSeen();

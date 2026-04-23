@@ -1,7 +1,7 @@
 // ============================================================
-//  main.cpp  –  IR Remote Web GUI  v4.0.0  |  ESP32-WROOM-32
+//  main.cpp  –  IR Remote Web GUI  v5.0.0  |  ESP32-WROOM-32
 //
-//  v4.0.0 build:
+//  v5.0.0 build:
 //    + 5 AC protocols: DAIKIN, MITSUBISHI_AC, WHYNTER, HAIER_AC, COOLIX
 //    + IRButton icon + color fields
 //    + Scheduler per-entry repeatCount / repeatDelay
@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>     // esp_ota_mark_app_valid_cancel_rollback()
 #include "config.h"
 #include "gpio_config.h"
 #include "ota_manager.h"
@@ -180,6 +181,14 @@ void setup() {
     // All modules initialised successfully — reset boot-failure counter.
     // This must be the LAST call in setup() so only a full clean boot clears it.
     wdtMgr.markBootSuccess();
+
+    // Tell IDF this boot is valid — cancels any pending OTA rollback.
+    // Without this, after an OTA update the device could roll back to the
+    // previous firmware on the next reboot if the boot isn't confirmed.
+    // esp_ota_mark_app_valid_cancel_rollback() is a no-op if we are already
+    // running from the confirmed slot (normal non-OTA boot).
+    esp_ota_mark_app_valid_cancel_rollback();
+    Serial.println(DEBUG_TAG " OTA: boot confirmed — rollback cancelled");
 }
 
 // ─────────────────────────────────────────────────────────────

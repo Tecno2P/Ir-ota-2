@@ -1,17 +1,20 @@
 #pragma once
 // ============================================================
-//  ota_manager.h  –  OTA firmware + filesystem update v2.0
+//  ota_manager.h  –  OTA firmware + filesystem update v3.0
 //
-//  New in v2.0:
-//    + Pre-OTA flash free space validation (rejects oversized FW)
-//    + LittleFS temp-file cleanup before OTA starts
-//    + Firmware size check: rejects if > OTA_MAX_FIRMWARE_BYTES
-//    + Boot partition rollback on end() failure
-//    + Real progress percentage (bytes written / partition size)
-//    + Chunk watchdog: abort stale uploads (OTA_CHUNK_TIMEOUT_MS)
-//    + Concurrent upload guard (aborts stale session cleanly)
+//  v3.0 — Permanent OTA storage-full fix:
+//    + Uses real IDF esp_ota_get_next_update_partition() to detect
+//      missing/corrupt OTA partition (was using getFreeSketchSpace
+//      which always returns partition SIZE not usable space)
+//    + Real partition size read from esp_partition_t directly
+//    + LittleFS deep cleanup: audit log, log archives, temp files
+//    + OTA slot state validated via esp_ota_get_state_partition()
+//    + Rollback support: marks app valid on success, invalid on fail
+//    + Correct progress % using real declared file size
+//    + Chunk watchdog: abort stale uploads
+//    + Concurrent upload guard
 //    + IR ISR paused during flash writes
-//    + LittleFS re-mounted after abort so config saves keep working
+//    + LittleFS re-mounted after abort
 // ============================================================
 #include <Arduino.h>
 #include <Update.h>
@@ -19,16 +22,25 @@
 #include <functional>
 #include "config.h"
 
-// Abort if no chunk arrives within 60 s (dropped TCP connection)
+// IDF OTA partition APIs — available in all espressif32 framework versions
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+
+// Abort upload if no chunk received within this window (dropped TCP)
 #ifndef OTA_CHUNK_TIMEOUT_MS
-  #define OTA_CHUNK_TIMEOUT_MS  60000UL
+  #define OTA_CHUNK_TIMEOUT_MS   60000UL
 #endif
 
-// Maximum accepted firmware binary size (bytes).
-// Slightly less than partition size (1408 KB) to leave margin.
-// Reject at 1380 KB to avoid Update.begin() failing mid-transfer.
+// Hard cap: reject firmware larger than this regardless of partition size.
+// Set to 1380 KB — 28 KB margin under 1408 KB partition for safety.
 #ifndef OTA_MAX_FIRMWARE_BYTES
   #define OTA_MAX_FIRMWARE_BYTES  (1380UL * 1024UL)
+#endif
+
+// Minimum LittleFS free bytes required before allowing OTA.
+// Ensures at minimum the filesystem is not completely full.
+#ifndef OTA_MIN_FS_FREE_BYTES
+  #define OTA_MIN_FS_FREE_BYTES   (32UL * 1024UL)
 #endif
 
 using OtaProgressCallback = std::function<void(size_t done, size_t total)>;
@@ -41,27 +53,35 @@ public:
     void onProgress(OtaProgressCallback cb) { _progressCb = cb; }
     void onEnd     (OtaEndCallback      cb) { _endCb      = cb; }
 
-    // Called per-chunk from web server upload handler.
+    // Called per-chunk by web server upload handler.
     // target = "firmware" | "filesystem"
+    // total  = declared file size in bytes (0 if unknown/chunked encoding)
     void handleUploadChunk(const String& target,
                            uint8_t*      data,
                            size_t        len,
                            size_t        index,
-                           size_t        total,   // total file size (0 = unknown)
+                           size_t        total,
                            bool          final);
 
     bool          isUpdating()     const { return _updating; }
     bool          restartPending() const { return _restartPending; }
     const String& lastError()      const { return _lastError; }
 
-    // Call from main loop() — aborts stale uploads
+    // Call from main loop() every iteration — aborts stale uploads
     void tickWatchdog();
 
-    // Clear error state without reboot — allows retrying OTA
+    // Clear error state without reboot — allows retrying after failure
     void clearError();
 
-    // Free OTA space in bytes (inactive partition)
+    // Real OTA partition free bytes via IDF API
+    // Returns 0 if no valid OTA partition exists
     size_t freeOtaBytes() const;
+
+    // Real OTA partition total size via IDF API
+    size_t otaPartitionSize() const;
+
+    // LittleFS free bytes (separate from OTA flash)
+    size_t fsFreeBytes() const;
 
 private:
     OtaProgressCallback _progressCb;
@@ -72,13 +92,18 @@ private:
     uint8_t             _lastPct;
     unsigned long       _lastChunkMs;
     size_t              _totalReceived;
-    size_t              _declaredSize;   // total bytes declared by HTTP Content-Length
+    size_t              _declaredSize;
 
     void beginUpdate  (const String& target, size_t declaredSize);
     void finishUpdate ();
     void abortUpdate  (const String& reason);
-    bool _cleanTempFiles();              // remove LittleFS temp/log files pre-OTA
-    bool _validateFlashSpace(size_t declaredSize, const String& target);
+
+    // Deep LittleFS cleanup — frees log archives, audit log, temp files
+    void _cleanLittleFSBeforeOta();
+
+    // Validate: partition exists, firmware fits, FS not critically full
+    // Returns false + calls abortUpdate() with clear message if check fails
+    bool _validateBeforeUpdate(size_t declaredSize, const String& target);
 };
 
 extern OtaManager otaMgr;
