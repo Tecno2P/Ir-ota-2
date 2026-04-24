@@ -62,6 +62,10 @@ static void _freeV1Buf(AsyncWebServerRequest* req) {
         [](AsyncWebServerRequest* req){}, \
         nullptr, \
         [this](AsyncWebServerRequest* req, uint8_t* d, size_t l, size_t i, size_t t) { \
+            if (_getV1Buf(req)->length() + l > HTTP_MAX_BODY) { \
+                _freeV1Buf(req); \
+                sendJsonV1(req, 413, "{\"error\":\"Request too large\"}"); return; \
+            } \
             _getV1Buf(req)->concat((char*)d, l); \
             bool last = (t > 0) ? (i + l >= t) : (i == 0); \
             if (last) { \

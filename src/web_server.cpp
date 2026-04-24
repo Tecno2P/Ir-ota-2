@@ -468,6 +468,20 @@ void WebUI::setupApiRoutes() {
         ([this](AsyncWebServerRequest* req, uint8_t* d, size_t l){
             handleTransmit(req, d, l); }));
 
+    // POST /api/v1/ir/pwm-test
+    // Send a test RAW burst at a specified carrier frequency to verify
+    // the emitter and PWM output are working correctly.
+    // Body: { "freqKHz": 38, "emitterIdx": 0 }
+    // Response: { "ok": true, "freqKHz": 38, "pulsesUs": [9000,4500,...] }
+    POST_BODY("/api/v1/ir/pwm-test",
+        ([this](AsyncWebServerRequest* req, uint8_t* d, size_t l){
+            handlePwmTest(req, d, l); }));
+
+    // GET /api/v1/ir/pwm-info
+    // Returns PWM capabilities: valid freq range, default, current emitter pins.
+    _server.on("/api/v1/ir/pwm-info", HTTP_GET,
+        [this](AsyncWebServerRequest* req) { handlePwmInfo(req); });
+
     _server.on("/api/export", HTTP_GET,
         [this](AsyncWebServerRequest* req) { handleExport(req); });
 
@@ -664,6 +678,75 @@ void WebUI::handleTransmit(AsyncWebServerRequest* req, uint8_t* d, size_t l) {
         ok = irTransmitter.transmit(btn);
     }
     sendJson(req, ok?200:500, ok?"{\"ok\":true}":"{\"error\":\"Transmit failed\"}");
+}
+
+// ── PWM / carrier frequency test ─────────────────────────────
+// Sends a standard NEC-style mark/space RAW pattern at the requested
+// carrier frequency. This verifies:
+//   1. The IR emitter LED is wired correctly
+//   2. The ledc PWM timer generates the right carrier
+//   3. The freqKHz field in saved buttons will transmit correctly
+//
+// Standard test pattern: 9 ms mark + 4.5 ms space + 560 us mark (AGC burst).
+// A receiver / oscilloscope on the RX pin will show the modulated carrier.
+void WebUI::handlePwmTest(AsyncWebServerRequest* req, uint8_t* d, size_t l) {
+    JsonDocument doc;
+    if (deserializeJson(doc, d, l) != DeserializationError::Ok) {
+        sendJson(req, 400, "{"error":"JSON parse failed"}"); return;
+    }
+
+    uint16_t freqKHz = doc["freqKHz"] | (uint16_t)IR_DEFAULT_FREQ_KHZ;
+    // Clamp to valid range
+    if (freqKHz < 20 || freqKHz > 60) freqKHz = IR_DEFAULT_FREQ_KHZ;
+
+    uint8_t emitterIdx = doc["emitterIdx"] | (uint8_t)0;
+
+    // Build a minimal AGC preamble RAW pattern (NEC-style mark+space+mark).
+    // Times in microseconds: 9000 mark, 4500 space, 560 mark.
+    // This is short enough to complete well within any WDT timeout.
+    static const uint16_t testPulses[] = { 9000, 4500, 560 };
+    const size_t numPulses = sizeof(testPulses) / sizeof(testPulses[0]);
+
+    bool ok = irTransmitter.transmitRaw(testPulses, numPulses, freqKHz);
+
+    // Build response with echo of what was sent
+    JsonDocument resp;
+    resp["ok"]       = ok;
+    resp["freqKHz"]  = freqKHz;
+    resp["freqHz"]   = (uint32_t)(freqKHz * 1000);
+    JsonArray pulses = resp["pulsesUs"].to<JsonArray>();
+    for (size_t i = 0; i < numPulses; i++) pulses.add(testPulses[i]);
+    resp["note"] = ok
+        ? String("AGC burst sent at ") + freqKHz + " kHz on emitter " + emitterIdx
+        : "Transmit failed — check emitter GPIO";
+    String out; serializeJson(resp, out);
+    sendJson(req, ok ? 200 : 500, out);
+}
+
+// ── PWM capabilities info ─────────────────────────────────────
+// Returns valid carrier frequency range and current emitter config.
+// UI uses this to build the frequency selector with correct bounds.
+void WebUI::handlePwmInfo(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    doc["freqKhzDefault"] = (uint16_t)IR_DEFAULT_FREQ_KHZ;
+    doc["freqKhzMin"]     = 20;    // hardware minimum for ESP32 ledc @ IR timings
+    doc["freqKhzMax"]     = 60;    // hardware maximum useful for IR
+    doc["freqKhzCommon"]  = "36, 38 (standard), 40, 56";
+    doc["pwmResolutionBits"] = 8;  // ESP32 ledc resolution used by IRremoteESP8266
+    doc["pwmDriverNote"]  = "ESP32 hardware ledc — no CPU bitbanging";
+
+    // List active emitter GPIOs and their current state
+    JsonArray emitters = doc["emitters"].to<JsonArray>();
+    auto pins = irTransmitter.activePins();
+    for (size_t i = 0; i < pins.size(); i++) {
+        JsonObject e = emitters.add<JsonObject>();
+        e["idx"]    = (int)i;
+        e["gpio"]   = pins[i];
+        e["active"] = true;
+    }
+    doc["emitterCount"] = (int)pins.size();
+    String out; serializeJson(doc, out);
+    sendJson(req, 200, out);
 }
 
 void WebUI::handleExport(AsyncWebServerRequest* req) {
@@ -1079,6 +1162,10 @@ void WebUI::broadcastIREvent(const IRButton& btn) {
     doc["protocol"] = protocolName(btn.protocol);
     doc["bits"]     = btn.bits;
     doc["name"]     = btn.name;
+    // Include carrier frequency so the UI can display/save it correctly.
+    // For decoded protocols this is always IR_DEFAULT_FREQ_KHZ (38).
+    // For RAW captures it reflects the actual measured/stored frequency.
+    doc["freqKHz"]  = btn.freqKHz;
     char hex[20];
     snprintf(hex, sizeof(hex), "0x%llX", (unsigned long long)btn.code);
     doc["code"] = hex;

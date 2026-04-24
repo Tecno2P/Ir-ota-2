@@ -9,6 +9,7 @@
 //  at runtime without rebooting.
 // ============================================================
 #include <Arduino.h>
+#include <vector>
 #include <IRsend.h>
 #include "ir_button.h"
 #include "config.h"
@@ -38,6 +39,9 @@ public:
 
     // Number of currently active (enabled) emitters.
     uint8_t activeCount() const;
+    // Returns vector of active GPIO pin numbers (one per active emitter slot).
+    // Used by /api/v1/ir/pwm-info to report emitter configuration to UI.
+    std::vector<uint8_t> activePins() const;
 
     // Active GPIO for emitter at index i (255 = disabled/invalid).
     uint8_t emitterPin(uint8_t idx) const;

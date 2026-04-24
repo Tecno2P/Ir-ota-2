@@ -609,6 +609,11 @@ struct IRButton {
         icon        = obj["icon"]        | (const char*)"";
         color       = obj["color"]       | (const char*)"";
 
+        // Clamp freqKHz to valid IR carrier range 20–60 kHz.
+        // IRremoteESP8266 sendRaw() is undefined outside this range.
+        // Standard values: 36, 38 (default), 40, 56 kHz.
+        if (freqKHz < 20 || freqKHz > 60) freqKHz = IR_DEFAULT_FREQ_KHZ;
+
         if (repeatCount < 1) repeatCount = 1;
         if (repeatCount > IR_MAX_REPEAT_COUNT) repeatCount = IR_MAX_REPEAT_COUNT;
         if (repeatDelay > IR_MAX_REPEAT_DELAY) repeatDelay = IR_MAX_REPEAT_DELAY;

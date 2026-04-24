@@ -295,3 +295,15 @@ bool IRTransmitter::doTransmit(IRsend* s, const IRButton& btn) {
     }
     return true;
 }
+
+// ── activePins ───────────────────────────────────────────────
+// Returns GPIO numbers of all active emitter slots.
+// Used by /api/v1/ir/pwm-info to report emitter config to the UI.
+std::vector<uint8_t> IRTransmitter::activePins() const {
+    std::vector<uint8_t> result;
+    for (uint8_t i = 0; i < IR_MAX_EMITTERS; ++i) {
+        if (_senders[i] && _pins[i] != 255)
+            result.push_back(_pins[i]);
+    }
+    return result;
+}

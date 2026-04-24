@@ -80,6 +80,8 @@ private:
     void handleDeleteButton(AsyncWebServerRequest*);
     void handleClearButtons(AsyncWebServerRequest*);
     void handleTransmit    (AsyncWebServerRequest*, uint8_t*, size_t);
+    void handlePwmTest     (AsyncWebServerRequest*, uint8_t*, size_t);  // POST /api/v1/ir/pwm-test
+    void handlePwmInfo     (AsyncWebServerRequest*);                     // GET  /api/v1/ir/pwm-info
     void handleExport      (AsyncWebServerRequest*);
     void handleImport      (AsyncWebServerRequest*, uint8_t*, size_t);
 
