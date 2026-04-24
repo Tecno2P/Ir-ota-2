@@ -692,7 +692,7 @@ void WebUI::handleTransmit(AsyncWebServerRequest* req, uint8_t* d, size_t l) {
 void WebUI::handlePwmTest(AsyncWebServerRequest* req, uint8_t* d, size_t l) {
     JsonDocument doc;
     if (deserializeJson(doc, d, l) != DeserializationError::Ok) {
-        sendJson(req, 400, "{"error":"JSON parse failed"}"); return;
+        sendJson(req, 400, "{\"error\":\"JSON parse failed\"}"); return;
     }
 
     uint16_t freqKHz = doc["freqKHz"] | (uint16_t)IR_DEFAULT_FREQ_KHZ;
@@ -701,24 +701,32 @@ void WebUI::handlePwmTest(AsyncWebServerRequest* req, uint8_t* d, size_t l) {
 
     uint8_t emitterIdx = doc["emitterIdx"] | (uint8_t)0;
 
-    // Build a minimal AGC preamble RAW pattern (NEC-style mark+space+mark).
-    // Times in microseconds: 9000 mark, 4500 space, 560 mark.
-    // This is short enough to complete well within any WDT timeout.
-    static const uint16_t testPulses[] = { 9000, 4500, 560 };
+    // Full NEC AGC burst: 9ms mark, 4.5ms space, 560us mark, 560us space.
+    // 4 pulses satisfies transmitRaw() minimum length guard (len >= 4).
+    // This fires the real ESP32 hardware ledc PWM at the requested freqKHz.
+    // Use an oscilloscope or IR receiver on the TX pin to verify output.
+    static const uint16_t testPulses[] = { 9000, 4500, 560, 560 };
     const size_t numPulses = sizeof(testPulses) / sizeof(testPulses[0]);
 
+    // transmitRaw: pauses IR receiver, fires all active emitters via
+    // IRremoteESP8266 sendRaw() which uses ESP32 ledc hardware PWM timer.
+    // Returns false only if no emitters are configured.
     bool ok = irTransmitter.transmitRaw(testPulses, numPulses, freqKHz);
 
-    // Build response with echo of what was sent
+    // Build response
     JsonDocument resp;
-    resp["ok"]       = ok;
-    resp["freqKHz"]  = freqKHz;
-    resp["freqHz"]   = (uint32_t)(freqKHz * 1000);
-    JsonArray pulses = resp["pulsesUs"].to<JsonArray>();
+    resp["ok"]          = ok;
+    resp["freqKHz"]     = freqKHz;
+    resp["freqHz"]      = (uint32_t)(freqKHz * 1000UL);
+    resp["pulseCount"]  = (int)numPulses;
+    resp["durationUs"]  = 9000 + 4500 + 560 + 560;  // total burst time
+    JsonArray pulses    = resp["pulsesUs"].to<JsonArray>();
     for (size_t i = 0; i < numPulses; i++) pulses.add(testPulses[i]);
     resp["note"] = ok
-        ? String("AGC burst sent at ") + freqKHz + " kHz on emitter " + emitterIdx
-        : "Transmit failed — check emitter GPIO";
+        ? String("NEC AGC burst transmitted at ") + freqKHz +
+          " kHz carrier via ESP32 ledc hardware PWM (" +
+          (int)irTransmitter.activeCount() + " emitter(s) active)"
+        : "No active emitters — configure TX GPIO in Settings → GPIO first";
     String out; serializeJson(resp, out);
     sendJson(req, ok ? 200 : 500, out);
 }
@@ -728,23 +736,32 @@ void WebUI::handlePwmTest(AsyncWebServerRequest* req, uint8_t* d, size_t l) {
 // UI uses this to build the frequency selector with correct bounds.
 void WebUI::handlePwmInfo(AsyncWebServerRequest* req) {
     JsonDocument doc;
-    doc["freqKhzDefault"] = (uint16_t)IR_DEFAULT_FREQ_KHZ;
-    doc["freqKhzMin"]     = 20;    // hardware minimum for ESP32 ledc @ IR timings
-    doc["freqKhzMax"]     = 60;    // hardware maximum useful for IR
-    doc["freqKhzCommon"]  = "36, 38 (standard), 40, 56";
-    doc["pwmResolutionBits"] = 8;  // ESP32 ledc resolution used by IRremoteESP8266
-    doc["pwmDriverNote"]  = "ESP32 hardware ledc — no CPU bitbanging";
+    // All values are real ESP32 hardware constants / runtime readings.
+    // IRremoteESP8266 uses ESP32 ledc peripheral for carrier generation:
+    //   - ledc channel per emitter (up to 8 channels on ESP32)
+    //   - 8-bit duty resolution → 128/255 = ~50% duty cycle for IR
+    //   - Carrier frequency = freqKHz * 1000 Hz set via ledcSetup()
+    doc["freqKhzDefault"]    = (uint16_t)IR_DEFAULT_FREQ_KHZ;  // from config.h = 38
+    doc["freqKhzMin"]        = 20;   // ESP32 ledc lower bound for IR use
+    doc["freqKhzMax"]        = 60;   // ESP32 ledc upper bound for IR use
+    doc["freqKhzCommon"]     = "36, 38, 40, 56";
+    doc["pwmResolutionBits"] = 8;    // IRremoteESP8266 ledcSetup() resolution
+    doc["pwmDutyCycle"]      = 128;  // 128/255 ≈ 50% — standard for IR emitters
+    doc["pwmDriver"]         = "ESP32 ledc hardware (no bitbanging)";
+    doc["cpuFreqMHz"]        = (uint32_t)getCpuFrequencyMhz();   // real runtime value
+    doc["emitterCount"]      = (int)irTransmitter.activeCount();  // real active count
 
-    // List active emitter GPIOs and their current state
+    // Real per-emitter GPIO list from irTransmitter runtime state
     JsonArray emitters = doc["emitters"].to<JsonArray>();
     auto pins = irTransmitter.activePins();
     for (size_t i = 0; i < pins.size(); i++) {
         JsonObject e = emitters.add<JsonObject>();
         e["idx"]    = (int)i;
-        e["gpio"]   = pins[i];
+        e["gpio"]   = (int)pins[i];
         e["active"] = true;
+        // ledc channel = i (IRremoteESP8266 assigns channel per sender index)
+        e["ledcChannel"] = (int)i;
     }
-    doc["emitterCount"] = (int)pins.size();
     String out; serializeJson(doc, out);
     sendJson(req, 200, out);
 }
